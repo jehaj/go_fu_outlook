@@ -30,15 +30,26 @@ func setupTestIMAPServer(t *testing.T) (*Server, string) {
 		t.Fatalf("failed to create store: %v", err)
 	}
 
+	msgs := map[string]bool{"msg1": true}
+
 	// Mock Graph server
 	graphServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/me/messages/msg1" {
+			delete(msgs, "msg1")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.URL.Path == "/me/mailFolders" {
 			_, _ = w.Write([]byte(`{"value": [{"id": "inbox", "displayName": "Inbox", "unreadItemCount": 1, "totalItemCount": 1}]}`))
 			return
 		}
 		if r.URL.Path == "/me/mailFolders/inbox/messages" {
-			_, _ = w.Write([]byte(`{"value": [{"id": "msg1", "subject": "Hello IMAP", "isRead": false, "createdDateTime": "2026-07-29T12:00:00Z"}]}`))
+			if msgs["msg1"] {
+				_, _ = w.Write([]byte(`{"value": [{"id": "msg1", "subject": "Hello IMAP", "isRead": false, "createdDateTime": "2026-07-29T12:00:00Z"}]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"value": []}`))
+			}
 			return
 		}
 		if r.URL.Path == "/me/messages/msg1/$value" {
@@ -164,5 +175,58 @@ func TestIMAPListAndSelect(t *testing.T) {
 
 	if fetchedMsgs[0].UID != 1 {
 		t.Errorf("expected fetched UID = 1, got %d", fetchedMsgs[0].UID)
+	}
+}
+
+func TestIMAPStoreSearchAndExpunge(t *testing.T) {
+	_, addr := setupTestIMAPServer(t)
+
+	client, err := imapclient.DialInsecure(addr, nil)
+	if err != nil {
+		t.Fatalf("failed to dial IMAP server: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Login("thunderbird", "localpassword").Wait(); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	_, err = client.Select("INBOX", nil).Wait()
+	if err != nil {
+		t.Fatalf("select INBOX failed: %v", err)
+	}
+
+	// Test Search
+	searchData, err := client.Search(&imap.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(searchData.AllSeqNums()) != 1 {
+		t.Errorf("expected 1 search result, got %d", len(searchData.AllSeqNums()))
+	}
+
+	// Test Store \Seen and \Deleted
+	seqSet := imap.SeqSetNum(1)
+	storeFlags := &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen, imap.FlagDeleted},
+	}
+
+	if err := client.Store(seqSet, storeFlags, nil).Close(); err != nil {
+		t.Fatalf("store flags failed: %v", err)
+	}
+
+	// Test Expunge
+	if err := client.Expunge().Close(); err != nil {
+		t.Fatalf("expunge failed: %v", err)
+	}
+
+	// Verify mailbox is empty after expunge
+	selectAfter, err := client.Select("INBOX", nil).Wait()
+	if err != nil {
+		t.Fatalf("re-select INBOX failed: %v", err)
+	}
+	if selectAfter.NumMessages != 0 {
+		t.Errorf("expected 0 messages after expunge, got %d", selectAfter.NumMessages)
 	}
 }
