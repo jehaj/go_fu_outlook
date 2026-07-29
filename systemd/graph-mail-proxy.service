@@ -1,0 +1,20 @@
+[Unit]
+Description=Local Graph-to-IMAP/SMTP Mail Proxy
+Documentation=https://github.com/nikolaj/go_fu_outlook
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/graph-mail-proxy --config %h/.config/graph-mail-proxy/config.yaml
+Restart=on-failure
+RestartSec=5s
+Environment=PATH=/usr/bin:/bin:%h/.local/bin
+
+# Hardening / Sandboxing
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=%h/.config/graph-mail-proxy
+
+[Install]
+WantedBy=default.target
