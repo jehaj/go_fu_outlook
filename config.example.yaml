@@ -21,7 +21,6 @@ azure:
   scopes:
     - "Mail.ReadWrite"
     - "Mail.Send"
-    - "offline_access"
 
 imap:
   # Must be loopback (127.0.0.1 or localhost)

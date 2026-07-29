@@ -22,7 +22,7 @@ var defaultClientIDs = map[string]string{
 func main() {
 	tenantID := flag.String("tenant", "organizations", "Azure AD Tenant ID or 'organizations'/'common'")
 	clientIDFlag := flag.String("client-id", "", "Azure AD Application (Client) ID or alias (office, teams, azure-cli, azure-ps)")
-	scopesFlag := flag.String("scopes", "Mail.ReadWrite,Mail.Send,offline_access", "Comma-separated scopes")
+	scopesFlag := flag.String("scopes", "Mail.ReadWrite,Mail.Send", "Comma-separated scopes")
 	flag.Parse()
 
 	clientID := *clientIDFlag
@@ -34,9 +34,15 @@ func main() {
 		clientID = resolved
 	}
 
-	scopes := strings.Split(*scopesFlag, ",")
-	for i, s := range scopes {
-		scopes[i] = strings.TrimSpace(s)
+	var scopes []string
+	for _, s := range strings.Split(*scopesFlag, ",") {
+		sTrim := strings.TrimSpace(s)
+		if !strings.EqualFold(sTrim, "offline_access") && !strings.EqualFold(sTrim, "openid") && sTrim != "" {
+			scopes = append(scopes, sTrim)
+		}
+	}
+	if len(scopes) == 0 {
+		scopes = []string{"Mail.ReadWrite", "Mail.Send"}
 	}
 
 	authority := fmt.Sprintf("https://login.microsoftonline.com/%s", *tenantID)
