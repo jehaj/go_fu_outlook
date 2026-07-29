@@ -1,0 +1,50 @@
+# Graph Mail Proxy - Example Configuration
+#
+# SECURITY NOTICE:
+# - Transport in v1 is PLAINTEXT OVER LOOPBACK (127.0.0.1) by design.
+#   Connections never leave the local machine. Non-loopback bind addresses
+#   are strictly prohibited and will cause startup failure. TLS support is
+#   planned as a Phase 2 follow-up.
+# - Log level: Secrets (tokens, authorization headers, passwords) are NEVER
+#   logged regardless of log level setting.
+
+azure:
+  # Azure AD Tenant ID or 'organizations' / 'common'
+  tenant_id: "organizations"
+  # Azure AD Application (Client) ID.
+  # Pre-consented first-party client IDs can be used if self-service app registration is restricted:
+  # Microsoft Office:    "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+  # Microsoft Teams:     "1fec8e78-bce4-4aaf-ab1b-5451cc387264"
+  # Azure CLI:           "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+  # Azure PowerShell:    "1950a258-227b-4e31-a9cf-717495945fc2"
+  client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+  scopes:
+    - "Mail.ReadWrite"
+    - "Mail.Send"
+    - "offline_access"
+
+imap:
+  # Must be loopback (127.0.0.1 or localhost)
+  bind_addr: "127.0.0.1:1143"
+
+smtp:
+  # Must be loopback (127.0.0.1 or localhost)
+  bind_addr: "127.0.0.1:1025"
+
+local_auth:
+  # Local credentials used by Thunderbird to log into the proxy
+  username: "thunderbird"
+  password: "localpassword"
+
+storage:
+  # Directory where OAuth tokens and SQLite database are stored
+  data_dir: "~/.config/graph-mail-proxy"
+  token_file: "tokens.json"
+  db_file: "proxy.db"
+
+sync:
+  # Polling interval for mail synchronization and new mail notifications
+  poll_interval: "1m"
+
+logging:
+  level: "info" # debug, info, warn, error
