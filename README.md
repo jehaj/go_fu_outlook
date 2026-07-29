@@ -3,7 +3,7 @@
 > [!WARNING]
 > All code in this repository is created by an LLM (Gemini 3.6 Flash Medium in Antigravity)! Please exercise caution before running this. It should be alright and low-risk, but I've yet to comb through it. You are probably better off using DavMail or the Exchange support in Thunderbird.
 
-> ![NOTE]
+> [!NOTE]
 > I've gotten Antigravity to create this, since Outlook is not natively available on Linux and my organisation does not allow IMAP and SMTP.
 
 A lightweight, single-user background proxy for Linux that allows standard IMAP/SMTP mail clients (such as **Mozilla Thunderbird**) to read and send email through Microsoft 365 / Azure AD work or school mailboxes via the **Microsoft Graph API**, instead of Exchange/EWS protocols.
