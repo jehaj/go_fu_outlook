@@ -26,13 +26,14 @@ type TokenProvider interface {
 }
 
 type Folder struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"displayName"`
-	ParentFolderID   string `json:"parentFolderId,omitempty"`
-	ChildFolderCount int    `json:"childFolderCount"`
-	UnreadItemCount  int    `json:"unreadItemCount"`
-	TotalItemCount   int    `json:"totalItemCount"`
-	WellKnownName    string `json:"wellKnownName,omitempty"`
+	ID               string   `json:"id"`
+	DisplayName      string   `json:"displayName"`
+	ParentFolderID   string   `json:"parentFolderId,omitempty"`
+	ChildFolderCount int      `json:"childFolderCount"`
+	UnreadItemCount  int      `json:"unreadItemCount"`
+	TotalItemCount   int      `json:"totalItemCount"`
+	WellKnownName    string   `json:"wellKnownName,omitempty"`
+	ChildFolders     []Folder `json:"childFolders,omitempty"`
 }
 
 type Message struct {
@@ -138,9 +139,14 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// ListFolders fetches mail folders for the current user.
+// ListFolders fetches mail folders for the current user including subfolders.
 func (c *Client) ListFolders(ctx context.Context) ([]Folder, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/me/mailFolders?$top=250", nil)
+	visited := make(map[string]bool)
+	return c.fetchFoldersRecursively(ctx, "/me/mailFolders?$top=250&$expand=childFolders($top=250)", visited)
+}
+
+func (c *Client) fetchFoldersRecursively(ctx context.Context, endpoint string, visited map[string]bool) ([]Folder, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +162,38 @@ func (c *Client) ListFolders(ctx context.Context) ([]Folder, error) {
 		return nil, fmt.Errorf("failed to decode folder list response: %w", err)
 	}
 
-	return result.Value, nil
+	var allFolders []Folder
+	for _, folder := range result.Value {
+		if visited[folder.ID] {
+			continue
+		}
+		visited[folder.ID] = true
+		allFolders = append(allFolders, folder)
+
+		if len(folder.ChildFolders) > 0 {
+			for _, child := range folder.ChildFolders {
+				if !visited[child.ID] {
+					visited[child.ID] = true
+					allFolders = append(allFolders, child)
+					if child.ChildFolderCount > 0 {
+						subEndpoint := fmt.Sprintf("/me/mailFolders/%s/childFolders?$top=250&$expand=childFolders($top=250)", url.PathEscape(child.ID))
+						subChildren, err := c.fetchFoldersRecursively(ctx, subEndpoint, visited)
+						if err == nil {
+							allFolders = append(allFolders, subChildren...)
+						}
+					}
+				}
+			}
+		} else if folder.ChildFolderCount > 0 {
+			subEndpoint := fmt.Sprintf("/me/mailFolders/%s/childFolders?$top=250&$expand=childFolders($top=250)", url.PathEscape(folder.ID))
+			children, err := c.fetchFoldersRecursively(ctx, subEndpoint, visited)
+			if err == nil {
+				allFolders = append(allFolders, children...)
+			}
+		}
+	}
+
+	return allFolders, nil
 }
 
 // GetFolder retrieves a single folder by ID or well-known name (inbox, sentitems, drafts, deleteditems).
@@ -180,7 +217,7 @@ func (c *Client) GetFolder(ctx context.Context, folderID string) (*Folder, error
 	return &folder, nil
 }
 
-// ListMessages fetches messages in a folder with pagination.
+// ListMessages fetches messages in a folder with pagination options.
 func (c *Client) ListMessages(ctx context.Context, folderID string, top int, skip int) ([]Message, error) {
 	if top <= 0 {
 		top = 50
@@ -204,6 +241,37 @@ func (c *Client) ListMessages(ctx context.Context, folderID string, top int, ski
 	}
 
 	return result.Value, nil
+}
+
+// ListAllMessages fetches all messages in a folder by following @odata.nextLink.
+func (c *Client) ListAllMessages(ctx context.Context, folderID string) ([]Message, error) {
+	endpoint := fmt.Sprintf("/me/mailFolders/%s/messages?$top=100&$select=id,subject,bodyPreview,createdDateTime,lastModifiedDateTime,sentDateTime,receivedDateTime,hasAttachments,isRead,isDraft,parentFolderId,sender,from,toRecipients,ccRecipients,bccRecipients,internetMessageId", url.PathEscape(folderID))
+
+	var allMessages []Message
+	for endpoint != "" {
+		req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		var result MessageListResponse
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode message list response: %w", err)
+		}
+
+		allMessages = append(allMessages, result.Value...)
+
+		endpoint = result.NextLink
+	}
+
+	return allMessages, nil
 }
 
 // GetMessageDelta performs a delta query to retrieve changed/deleted messages since deltaLink.

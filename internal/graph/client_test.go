@@ -230,3 +230,102 @@ func TestErrorHandling(t *testing.T) {
 		t.Errorf("unexpected error format: %v", err)
 	}
 }
+
+func TestListAllMessagesPagination(t *testing.T) {
+	var mockServer *httptest.Server
+	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/me/mailFolders/inbox/messages" {
+			// First page with @odata.nextLink
+			nextURL := mockServer.URL + "/me/mailFolders/inbox/messages/page2"
+			resp := `{
+				"value": [
+					{"id": "msg1", "subject": "Page 1 - Email 1"},
+					{"id": "msg2", "subject": "Page 1 - Email 2"}
+				],
+				"@odata.nextLink": "` + nextURL + `"
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+		if r.URL.Path == "/me/mailFolders/inbox/messages/page2" {
+			// Second page without @odata.nextLink
+			resp := `{
+				"value": [
+					{"id": "msg3", "subject": "Page 2 - Email 3"}
+				]
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer mockServer.Close()
+
+	tp := &mockTokenProvider{token: "test-access-token"}
+	client := NewClient(tp, mockServer.URL)
+
+	messages, err := client.ListAllMessages(context.Background(), "inbox")
+	if err != nil {
+		t.Fatalf("ListAllMessages failed: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 messages across 2 pages, got %d", len(messages))
+	}
+	if messages[2].ID != "msg3" || messages[2].Subject != "Page 2 - Email 3" {
+		t.Errorf("unexpected message on page 2: %+v", messages[2])
+	}
+}
+
+func TestListFoldersRecursive(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/me/mailFolders" {
+			resp := `{
+				"value": [
+					{"id": "folder_inbox", "displayName": "Inbox", "childFolderCount": 0},
+					{
+						"id": "folder_custom",
+						"displayName": "BrightSpace",
+						"childFolderCount": 1,
+						"childFolders": [
+							{"id": "folder_bs_sub", "displayName": "Assignments", "childFolderCount": 0}
+						]
+					}
+				]
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer mockServer.Close()
+
+	tp := &mockTokenProvider{token: "test-access-token"}
+	client := NewClient(tp, mockServer.URL)
+
+	folders, err := client.ListFolders(context.Background())
+	if err != nil {
+		t.Fatalf("ListFolders failed: %v", err)
+	}
+
+	if len(folders) != 3 {
+		t.Fatalf("expected 3 folders (including child folder), got %d", len(folders))
+	}
+
+	foundBS := false
+	foundSub := false
+	for _, f := range folders {
+		if f.DisplayName == "BrightSpace" {
+			foundBS = true
+		}
+		if f.DisplayName == "Assignments" {
+			foundSub = true
+		}
+	}
+
+	if !foundBS || !foundSub {
+		t.Errorf("expected BrightSpace and Assignments folders, foundBS=%v, foundSub=%v", foundBS, foundSub)
+	}
+}

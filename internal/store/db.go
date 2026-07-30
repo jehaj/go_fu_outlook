@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,13 +96,15 @@ func (s *Store) EnsureFolder(folderID string, name string) (*FolderState, error)
 	defer s.mu.Unlock()
 
 	var state FolderState
-	err := s.db.QueryRow(`SELECT id, name, uid_validity, next_uid, delta_link FROM folders WHERE id = ?`, folderID).Scan(
+	// Match by ID or case-insensitive Name
+	err := s.db.QueryRow(`SELECT id, name, uid_validity, next_uid, delta_link FROM folders WHERE id = ? OR LOWER(name) = LOWER(?)`, folderID, name).Scan(
 		&state.ID, &state.Name, &state.UIDValidity, &state.NextUID, &state.DeltaLink,
 	)
 	if err == nil {
-		if state.Name != name {
-			_, _ = s.db.Exec(`UPDATE folders SET name = ? WHERE id = ?`, name, folderID)
+		if state.Name != name || state.ID != folderID {
+			_, _ = s.db.Exec(`UPDATE folders SET name = ?, id = ? WHERE id = ?`, name, folderID, state.ID)
 			state.Name = name
+			state.ID = folderID
 		}
 		return &state, nil
 	}
@@ -130,6 +133,66 @@ func (s *Store) EnsureFolder(folderID string, name string) (*FolderState, error)
 		NextUID:     1,
 		DeltaLink:   "",
 	}, nil
+}
+
+func (s *Store) GetFolderByNameOrID(nameOrID string) (*FolderState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var state FolderState
+	err := s.db.QueryRow(`SELECT id, name, uid_validity, next_uid, delta_link FROM folders WHERE id = ?`, nameOrID).Scan(
+		&state.ID, &state.Name, &state.UIDValidity, &state.NextUID, &state.DeltaLink,
+	)
+	if err == nil {
+		return &state, nil
+	}
+
+	err = s.db.QueryRow(`SELECT id, name, uid_validity, next_uid, delta_link FROM folders WHERE LOWER(name) = LOWER(?)`, nameOrID).Scan(
+		&state.ID, &state.Name, &state.UIDValidity, &state.NextUID, &state.DeltaLink,
+	)
+	if err == nil {
+		return &state, nil
+	}
+
+	wellKnownID := canonicalWellKnownID(nameOrID)
+	if wellKnownID != "" {
+		err = s.db.QueryRow(`SELECT id, name, uid_validity, next_uid, delta_link FROM folders WHERE id = ? OR LOWER(name) = LOWER(?)`, wellKnownID, wellKnownID).Scan(
+			&state.ID, &state.Name, &state.UIDValidity, &state.NextUID, &state.DeltaLink,
+		)
+		if err == nil {
+			return &state, nil
+		}
+	}
+
+	return nil, sql.ErrNoRows
+}
+
+func canonicalWellKnownID(name string) string {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "inbox":
+		return "inbox"
+	case "sent items", "sent", "sentitems":
+		return "sentitems"
+	case "drafts":
+		return "drafts"
+	case "deleted items", "trash", "deleteditems":
+		return "deleteditems"
+	default:
+		return ""
+	}
+}
+
+func (s *Store) ResolveFolderID(nameOrID string) string {
+	folder, err := s.GetFolderByNameOrID(nameOrID)
+	if err == nil && folder != nil {
+		return folder.ID
+	}
+	wellKnown := canonicalWellKnownID(nameOrID)
+	if wellKnown != "" {
+		return wellKnown
+	}
+	return nameOrID
 }
 
 func (s *Store) SaveDeltaLink(folderID string, deltaLink string) error {

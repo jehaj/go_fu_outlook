@@ -89,15 +89,15 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.Sel
 		return nil, imapserver.ErrAuthFailed
 	}
 
-	folderID := resolveFolderID(mailbox)
+	ctx := context.Background()
+	folderID := s.resolveFolderID(ctx, mailbox)
 	state, err := s.store.EnsureFolder(folderID, mailbox)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch latest messages from Graph
-	ctx := context.Background()
-	graphMsgs, err := s.graphClient.ListMessages(ctx, folderID, 100, 0)
+	// Fetch all latest messages from Graph using pagination
+	graphMsgs, err := s.graphClient.ListAllMessages(ctx, folderID)
 	if err == nil {
 		for _, m := range graphMsgs {
 			size := int64(len(m.BodyPreview)) + 500
@@ -137,7 +137,8 @@ func (s *Session) Unselect() error {
 }
 
 func (s *Session) Status(mailbox string, options *imap.StatusOptions) (*imap.StatusData, error) {
-	folderID := resolveFolderID(mailbox)
+	ctx := context.Background()
+	folderID := s.resolveFolderID(ctx, mailbox)
 	state, err := s.store.EnsureFolder(folderID, mailbox)
 	if err != nil {
 		return nil, err
@@ -365,20 +366,20 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) 
 	return &imap.CopyData{}, nil
 }
 
-func resolveFolderID(name string) string {
-	lower := strings.ToLower(name)
-	switch lower {
-	case "inbox":
-		return "inbox"
-	case "sent items", "sent":
-		return "sentitems"
-	case "drafts":
-		return "drafts"
-	case "deleted items", "trash":
-		return "deleteditems"
-	default:
-		return name
+func (s *Session) resolveFolderID(ctx context.Context, name string) string {
+	folderID := s.store.ResolveFolderID(name)
+	if _, err := s.store.GetFolderByNameOrID(name); err == nil {
+		return folderID
 	}
+	// Attempt fetching folders from Graph to populate DB if not previously loaded
+	folders, err := s.graphClient.ListFolders(ctx)
+	if err == nil {
+		for _, f := range folders {
+			_, _ = s.store.EnsureFolder(f.ID, f.DisplayName)
+		}
+		return s.store.ResolveFolderID(name)
+	}
+	return folderID
 }
 
 func matchesNumSet(seqNum uint32, uid imap.UID, numSet imap.NumSet) bool {

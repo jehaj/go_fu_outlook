@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,5 +229,121 @@ func TestIMAPStoreSearchAndExpunge(t *testing.T) {
 	}
 	if selectAfter.NumMessages != 0 {
 		t.Errorf("expected 0 messages after expunge, got %d", selectAfter.NumMessages)
+	}
+}
+
+func TestIMAPCustomFolderAndPagination(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	var graphServer *httptest.Server
+	graphServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/me/mailFolders" {
+			resp := `{
+				"value": [
+					{"id": "inbox", "displayName": "Inbox", "childFolderCount": 0},
+					{"id": "graph_id_brightspace", "displayName": "BrightSpace", "childFolderCount": 0}
+				]
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+
+		if r.URL.Path == "/me/mailFolders/graph_id_brightspace/messages" {
+			page2URL := graphServer.URL + "/me/mailFolders/graph_id_brightspace/messages/page2"
+			// Page 1: generate 100 messages with nextLink
+			var msgs []string
+			for i := 1; i <= 100; i++ {
+				msgs = append(msgs, `{"id": "bs_msg_`+string(rune('0'+i%10))+`_`+string(rune('a'+i%26))+`_`+string(rune('A'+i%26))+`", "subject": "BrightSpace Email", "createdDateTime": "2026-07-29T12:00:00Z"}`)
+			}
+			jsonMsgs := `[` + strings.Join(msgs, ",") + `]`
+			resp := `{
+				"value": ` + jsonMsgs + `,
+				"@odata.nextLink": "` + page2URL + `"
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+
+		if r.URL.Path == "/me/mailFolders/graph_id_brightspace/messages/page2" {
+			// Page 2: generate 5 messages without nextLink
+			var msgs []string
+			for i := 101; i <= 105; i++ {
+				msgs = append(msgs, `{"id": "bs_msg_p2_`+string(rune('0'+i%10))+`_`+string(rune('a'+i%26))+`", "subject": "BrightSpace Email Page 2", "createdDateTime": "2026-07-29T12:00:00Z"}`)
+			}
+			jsonMsgs := `[` + strings.Join(msgs, ",") + `]`
+			resp := `{
+				"value": ` + jsonMsgs + `
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(func() { graphServer.Close() })
+
+	graphClient := graph.NewClient(&dummyTokenProvider{}, graphServer.URL)
+	cfg := config.DefaultConfig()
+	cfg.IMAP.BindAddr = "127.0.0.1:0"
+	cfg.Storage.DataDir = tmpDir
+
+	server, err := NewServer(cfg, graphClient, st)
+	if err != nil {
+		t.Fatalf("failed to create IMAP server: %v", err)
+	}
+
+	go func() { _ = server.Start() }()
+	for i := 0; i < 50; i++ {
+		if server.Addr() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = st.Close()
+	})
+
+	client, err := imapclient.DialInsecure(server.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Login("thunderbird", "localpassword").Wait(); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	// Verify List returns BrightSpace
+	mboxes, err := client.List("", "*", nil).Collect()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+
+	foundBS := false
+	for _, mb := range mboxes {
+		if mb.Mailbox == "BrightSpace" {
+			foundBS = true
+		}
+	}
+	if !foundBS {
+		t.Errorf("expected BrightSpace in mailbox list, got %v", mboxes)
+	}
+
+	// Select BrightSpace and verify all 105 messages are synced!
+	selectData, err := client.Select("BrightSpace", nil).Wait()
+	if err != nil {
+		t.Fatalf("Select BrightSpace failed: %v", err)
+	}
+
+	if selectData.NumMessages != 105 {
+		t.Errorf("expected 105 messages in BrightSpace, got %d", selectData.NumMessages)
 	}
 }

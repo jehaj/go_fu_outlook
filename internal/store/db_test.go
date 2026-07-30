@@ -168,3 +168,43 @@ func TestDeltaLinkPersistence(t *testing.T) {
 		t.Errorf("expected delta link %q, got %q", newDelta, folderAfter.DeltaLink)
 	}
 }
+
+func TestFolderResolutionAndAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// Ensure custom folder with Graph ID "AAMk_brightspace" and DisplayName "BrightSpace"
+	_, err = s.EnsureFolder("AAMk_brightspace", "BrightSpace")
+	if err != nil {
+		t.Fatalf("EnsureFolder failed: %v", err)
+	}
+
+	// 1. Resolve by exact DisplayName
+	resID := s.ResolveFolderID("BrightSpace")
+	if resID != "AAMk_brightspace" {
+		t.Errorf("expected AAMk_brightspace, got %s", resID)
+	}
+
+	// 2. Resolve case-insensitively
+	resIDLower := s.ResolveFolderID("brightspace")
+	if resIDLower != "AAMk_brightspace" {
+		t.Errorf("expected AAMk_brightspace, got %s", resIDLower)
+	}
+
+	// 3. Resolve well-known aliases
+	resSent := s.ResolveFolderID("Sent Items")
+	if resSent != "sentitems" {
+		t.Errorf("expected sentitems, got %s", resSent)
+	}
+
+	resTrash := s.ResolveFolderID("Trash")
+	if resTrash != "deleteditems" {
+		t.Errorf("expected deleteditems, got %s", resTrash)
+	}
+}
